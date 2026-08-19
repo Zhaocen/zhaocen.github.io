@@ -170,6 +170,7 @@ nav:
       - ai/index.md
       - vLLM 笔记: ai/vllm.md
       - 昇腾适配: ai/ascend.md
+      - vLLM 启动服务全流程代码级剖析: ai/vllm-startup-internals.md
   - 模型评测:
       - benchmark/index.md
       - AISBench 使用指南: benchmark/aisbench.md
