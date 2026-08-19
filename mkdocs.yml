@@ -87,9 +87,8 @@ plugins:
   # 搜索语言自动取 theme.language (zh)，无需显式声明
   - search:
       separator: '[\s\u200b\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
-  # 标签系统
-  - tags:
-      tags_file: tags.md
+  # 标签系统（标签索引页由 docs/tags.md 中的 <!-- material/tags --> 标记生成）
+  - tags
   # 页面底部显示最后更新时间（依赖 git 历史）
   - git-revision-date-localized:
       type: datetime
