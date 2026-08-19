@@ -1,6 +1,6 @@
 # zhaocen.github.io
 
-基于 [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/) 搭建的个人知识库。
+基于 [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/) 搭建的个人 AI 知识库。
 
 线上地址：<https://zhaocen.github.io/>
 
@@ -10,10 +10,11 @@
 .
 ├── docs/                     # 所有 Markdown 内容
 │   ├── index.md              # 首页
+│   ├── llm/                  # 大模型
 │   ├── ai/                   # AI 推理
-│   ├── benchmark/            # 性能评测
-│   ├── engineering/          # 工程实践
-│   ├── about/                # 关于与写作指南
+│   ├── benchmark/            # 模型评测
+│   ├── tags.md               # 标签索引
+│   ├── about/                # 关于、写作指南、容器与部署
 │   ├── stylesheets/          # 自定义 CSS
 │   └── javascripts/          # 自定义 JS（MathJax 配置）
 ├── mkdocs.yml                # 站点配置与导航
@@ -26,7 +27,7 @@
 ## 本地预览
 
 ```bash
-./preview.sh start     # 启动，访问 http://<ip>:8000
+./preview.sh start     # 启动，访问 http://localhost:8000
 ./preview.sh stop      # 停止
 ./preview.sh build     # 以 CI 的 --strict 模式验证构建
 ```

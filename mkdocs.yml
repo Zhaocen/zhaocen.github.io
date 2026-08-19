@@ -3,10 +3,10 @@
 #  文档: https://squidfunk.github.io/mkdocs-material/
 # ============================================================
 
-site_name: Zhaocen 的知识库
+site_name: AI 知识库
 site_url: https://zhaocen.github.io/
 site_author: Zhaocen
-site_description: AI 推理引擎、性能评测与工程实践的个人笔记
+site_description: 大模型、AI 推理与模型评测的个人笔记
 copyright: Copyright &copy; 2026 Zhaocen
 
 repo_url: https://github.com/Zhaocen/zhaocen.github.io
@@ -164,17 +164,17 @@ extra:
 # ------------------------------------------------------------
 nav:
   - 首页: index.md
+  - 大模型:
+      - llm/index.md
   - AI 推理:
       - ai/index.md
       - vLLM 笔记: ai/vllm.md
       - 昇腾适配: ai/ascend.md
-  - 性能评测:
+  - 模型评测:
       - benchmark/index.md
       - AISBench 使用指南: benchmark/aisbench.md
-  - 工程实践:
-      - engineering/index.md
-      - 容器与部署: engineering/docker.md
+  - 标签: tags.md
   - 关于:
       - about/index.md
       - 写作与发布流程: about/workflow.md
-  - 标签: tags.md
+      - 容器与部署: about/docker.md

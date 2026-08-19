@@ -24,7 +24,7 @@ case "${1:-start}" in
     start)
         ensure_image
         if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-            echo "预览已在运行: http://$(hostname -I | awk '{print $1}'):${PORT}"
+            echo "预览已在运行: http://127.0.0.1:${PORT}"
             exit 0
         fi
         docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -34,8 +34,8 @@ case "${1:-start}" in
             "$IMAGE" \
             serve --dev-addr 0.0.0.0:8000
         echo "==> 预览已启动"
-        echo "    本机:  http://127.0.0.1:${PORT}"
-        echo "    公网:  http://localhost:${PORT}   (需在安全组放行 ${PORT} 端口)"
+        echo "    地址:  http://127.0.0.1:${PORT}"
+        echo "    远程访问需使用服务器地址并放行 ${PORT} 端口"
         echo "    日志:  ./preview.sh logs"
         ;;
     stop)

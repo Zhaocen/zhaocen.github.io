@@ -4,18 +4,17 @@
 
 ## 一、环境说明
 
-| 位置 | 路径 / 地址 | 说明 |
-|------|-------------|------|
-| 阿里云工作副本 | `~/knowledge-base` | 写作与预览的主目录 |
-| 预览地址 | `http://localhost:8000` | 需在安全组放行 8000 端口 |
-| 线上站点 | <https://zhaocen.github.io/> | GitHub Actions 自动发布 |
+| 位置 | 说明 |
+|------|------|
+| 工作副本 | 克隆本仓库后的项目目录，写作与预览都在其中进行 |
+| 预览地址 | `http://localhost:8000`（MkDocs 默认端口） |
+| 线上站点 | <https://zhaocen.github.io/> ，由 GitHub Actions 自动发布 |
 
 ## 二、启动预览
 
-登录阿里云机器后执行：
+进入项目目录后执行：
 
 ```bash
-cd ~/knowledge-base
 ./preview.sh start
 ```
 
@@ -27,22 +26,23 @@ cd ~/knowledge-base
 ./preview.sh stop     # 停止预览容器
 ./preview.sh logs     # 查看容器日志
 ./preview.sh status   # 查看运行状态
+./preview.sh build    # 以 CI 的 --strict 模式验证构建
 ```
 
 !!! warning "预览完记得关掉"
 
-    机器只有 1.6G 内存，长期挂着预览容器会挤占资源。
+    预览容器会常驻内存，在资源有限的机器上用完及时 `./preview.sh stop`。
 
 ## 三、新增一篇文章
 
-1. 在 `docs/` 下对应板块创建 Markdown 文件，例如 `docs/ai/kv-cache.md`
+1. 在 `docs/` 下对应板块创建 Markdown 文件，例如 `docs/llm/moe.md`
 2. 文件顶部可选地写 front matter 加标签：
 
     ```yaml
     ---
     tags:
-      - vLLM
-      - 显存优化
+      - 大模型
+      - MoE
     ---
     ```
 
@@ -50,10 +50,9 @@ cd ~/knowledge-base
 
     ```yaml
     nav:
-      - AI 推理:
-          - ai/index.md
-          - vLLM 笔记: ai/vllm.md
-          - KV Cache 管理: ai/kv-cache.md   # 新增这行
+      - 大模型:
+          - llm/index.md
+          - MoE 架构笔记: llm/moe.md   # 新增这行
     ```
 
 !!! tip "不登记会怎样"
@@ -63,9 +62,8 @@ cd ~/knowledge-base
 ## 四、发布上线
 
 ```bash
-cd ~/knowledge-base
 git add -A
-git commit -m "docs: 新增 KV Cache 管理笔记"
+git commit -m "docs: 新增 MoE 架构笔记"
 git push
 ```
 
@@ -129,11 +127,6 @@ CI 使用 `mkdocs build --strict`，任何警告都会导致失败。最常见�
 |------|------|------|
 | `is not found among documentation files` | `nav` 里写了不存在的文件 | 检查路径拼写 |
 | `contains a link ... not found` | 内部链接指向的文件不存在 | 用相对路径指向真实 `.md` 文件 |
-| `Config value 'plugins'` | 依赖未安装 | 检查 `requirements.txt` |
+| `deprecated` 配置警告 | 主题或插件升级后选项变更 | 查阅对应插件文档更新写法 |
 
-本地复现 CI 的构建结果：
-
-```bash
-docker run --rm -v ~/knowledge-base:/docs \
-  squidfunk/mkdocs-material:latest build --strict
-```
+推送前建议先本地跑一次 `./preview.sh build`，它与 CI 使用完全相同的构建参数。
