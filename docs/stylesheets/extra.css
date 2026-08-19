@@ -1,0 +1,38 @@
+/* ============================================================
+   自定义样式
+   ============================================================ */
+
+:root {
+  /* 正文最大宽度略放宽，长代码块更好读 */
+  --md-content-max-width: 56rem;
+}
+
+/* 中文正文行高与字距微调，提升长文可读性 */
+.md-typeset {
+  line-height: 1.75;
+  letter-spacing: 0.01em;
+}
+
+/* 表格默认左对齐并支持横向滚动 */
+.md-typeset table:not([class]) {
+  font-size: 0.76rem;
+}
+
+/* 代码块字号稍小，容纳更多内容 */
+.md-typeset pre > code {
+  font-size: 0.72rem;
+}
+
+/* 首页卡片网格：悬浮时轻微抬升 */
+.md-typeset .grid.cards > ul > li {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* 「最后更新时间」小字弱化 */
+.md-source-file__fact {
+  opacity: 0.7;
+}

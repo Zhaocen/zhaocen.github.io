@@ -1,0 +1,181 @@
+# ============================================================
+#  Material for MkDocs 配置
+#  文档: https://squidfunk.github.io/mkdocs-material/
+# ============================================================
+
+site_name: Zhaocen 的知识库
+site_url: https://zhaocen.github.io/
+site_author: Zhaocen
+site_description: AI 推理引擎、性能评测与工程实践的个人笔记
+copyright: Copyright &copy; 2026 Zhaocen
+
+repo_url: https://github.com/Zhaocen/zhaocen.github.io
+repo_name: Zhaocen/zhaocen.github.io
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# ------------------------------------------------------------
+#  主题
+# ------------------------------------------------------------
+theme:
+  name: material
+  language: zh
+  icon:
+    logo: material/book-open-page-variant
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+  palette:
+    # 跟随系统
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: 跟随系统设置
+    # 浅色模式
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    # 深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+
+  font:
+    text: Noto Sans SC
+    code: JetBrains Mono
+
+  features:
+    # 导航
+    - navigation.instant          # 即时加载，页面切换无刷新
+    - navigation.instant.progress # 加载进度条
+    - navigation.tracking         # URL 跟随锚点
+    - navigation.tabs             # 顶部一级导航标签
+    - navigation.tabs.sticky      # 标签栏吸顶
+    - navigation.sections         # 侧栏分组显示
+    - navigation.indexes          # 分组支持独立首页
+    - navigation.top              # 回到顶部按钮
+    - navigation.footer           # 底部上/下一页
+    # 目录
+    - toc.follow                  # 目录跟随滚动
+    # 搜索
+    - search.suggest              # 搜索补全
+    - search.highlight            # 结果高亮
+    - search.share                # 分享搜索链接
+    # 内容
+    - content.code.copy           # 代码块复制按钮
+    - content.code.annotate       # 代码注释气泡
+    - content.action.edit         # 「编辑此页」按钮
+    - content.tooltips            # 悬浮提示
+    - content.tabs.link           # 内容标签联动
+
+# ------------------------------------------------------------
+#  插件
+# ------------------------------------------------------------
+plugins:
+  # 搜索：separator 针对中文调整，配合 jieba 分词
+  # 搜索语言自动取 theme.language (zh)，无需显式声明
+  - search:
+      separator: '[\s\u200b\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  # 标签系统
+  - tags:
+      tags_file: tags.md
+  # 页面底部显示最后更新时间（依赖 git 历史）
+  - git-revision-date-localized:
+      type: datetime
+      timezone: Asia/Shanghai
+      locale: zh
+      enable_creation_date: true
+      fallback_to_build_date: true
+
+# ------------------------------------------------------------
+#  Markdown 扩展
+# ------------------------------------------------------------
+markdown_extensions:
+  - abbr
+  - admonition          # !!! note 提示框
+  - attr_list           # {: .class } 属性
+  - def_list            # 定义列表
+  - footnotes           # 脚注
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: 该章节的永久链接
+      toc_depth: 4
+
+  - pymdownx.arithmatex:      # LaTeX 数学公式
+      generic: true
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details          # 可折叠块
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:       # 代码高亮
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys             # ++ctrl+c++ 按键样式
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:     # 嵌套代码块 + mermaid 图
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:          # 内容标签页
+      alternate_style: true
+  - pymdownx.tasklist:        # 任务清单
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# ------------------------------------------------------------
+#  额外资源
+# ------------------------------------------------------------
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Zhaocen
+      name: GitHub
+
+# ------------------------------------------------------------
+#  导航结构
+#  说明：新增页面后在此登记，即可出现在侧边栏
+# ------------------------------------------------------------
+nav:
+  - 首页: index.md
+  - AI 推理:
+      - ai/index.md
+      - vLLM 笔记: ai/vllm.md
+      - 昇腾适配: ai/ascend.md
+  - 性能评测:
+      - benchmark/index.md
+      - AISBench 使用指南: benchmark/aisbench.md
+  - 工程实践:
+      - engineering/index.md
+      - 容器与部署: engineering/docker.md
+  - 关于:
+      - about/index.md
+      - 写作与发布流程: about/workflow.md
+  - 标签: tags.md
