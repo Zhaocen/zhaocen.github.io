@@ -166,6 +166,7 @@ nav:
   - 首页: index.md
   - 大模型:
       - llm/index.md
+      - GLM-5.2 模型结构解析: llm/glm-5.2-architecture.md
   - AI 推理:
       - ai/index.md
       - vLLM 启动服务全流程代码级剖析: ai/vllm-startup-internals.md
