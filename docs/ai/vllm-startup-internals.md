@@ -73,40 +73,50 @@ tags:
 
 ### 0.2 4P1D + EP 的物理拓扑
 
-本文假设 5 台 Atlas 800 A3（每台 16 卡），4 台跑 Prefill、1 台跑 Decode：
+本文假设 8 台 8 卡昇腾节点。**4 台各跑一个独立的 Prefill 实例**（每个实例 DP4 × TP2 = 8 卡，占满一台）；**另外 4 台合起来跑一个 Decode 实例**（DP32 × TP1 = 32 卡，横跨 4 台机器）。所谓 "4P1D" 数的是**实例**不是机器：4 个 P 实例 + 1 个 D 实例，物理上是 8 台 64 卡。
 
 ```
-                        ┌──────────────────────────────┐
-   HTTP 请求 ──────────► │   Proxy (load_balance_proxy) │
-                        │   :8000                      │
-                        └───┬──────────────────────┬───┘
-                            │ select_prefiller     │ select_decoder
-        ┌───────────────────┼──────────┬───────────┼─────────────┐
-        ▼                   ▼          ▼           ▼             ▼
-   ┌─────────┐        ┌─────────┐  ┌─────────┐ ┌─────────┐  ┌──────────┐
-   │ P0 node │        │ P1 node │  │ P2 node │ │ P3 node │  │ D  node  │
-   │ 16 NPU  │        │ 16 NPU  │  │ 16 NPU  │ │ 16 NPU  │  │ 16 NPU   │
-   │ DP4×TP4 │        │ DP4×TP4 │  │ DP4×TP4 │ │ DP4×TP4 │  │ DP16×TP1 │
-   │ EP = 16 │        │ EP = 16 │  │ EP = 16 │ │ EP = 16 │  │ EP = 16  │
-   │ :7100-3 │        │ :7100-3 │  │ :7100-3 │ │ :7100-3 │  │ :7100-15 │
-   └────┬────┘        └────┬────┘  └────┬────┘ └────┬────┘  └────▲─────┘
-        └──────────────────┴────────────┴───────────┴────────────┘
-                    KV Cache 传输（Mooncake / AscendDirect RDMA）
+                     ┌──────────────────────────────┐
+   HTTP 请求 ───────► │   Proxy (load_balance_proxy) │
+                     │   :8000                      │
+                     └──┬────────────────────────┬──┘
+      select_prefiller  │                        │  select_decoder
+        ┌─────────┬─────┴───┬─────────┐          │
+        ▼         ▼         ▼         ▼          │
+   ┌─────────┬─────────┬─────────┬─────────┐     │
+   │ P0 node │ P1 node │ P2 node │ P3 node │     │
+   │  8 NPU  │  8 NPU  │  8 NPU  │  8 NPU  │     │
+   │ DP4×TP2 │ DP4×TP2 │ DP4×TP2 │ DP4×TP2 │     │
+   │ EP =  8 │ EP =  8 │ EP =  8 │ EP =  8 │     │
+   │ :7100-3 │ :7100-3 │ :7100-3 │ :7100-3 │     │
+   └────┬────┴────┬────┴────┬────┴────┬────┘     │
+        └─────────┴────┬────┴─────────┘          │
+                       ▼                         ▼
+   ┌──────────────────────────────────────────────────┐
+   │ D instance (1 个实例, 4 台节点): DP32×TP1, EP=32 │
+   ├──────────┬──────────┬──────────┬─────────────────┤
+   │ D0 node  │ D1 node  │ D2 node  │ D3 node         │
+   │  8 NPU   │  8 NPU   │  8 NPU   │  8 NPU          │
+   │ dp 0-7   │ dp 8-15  │ dp 16-23 │ dp 24-31        │
+   │ :7100-7  │ :7100-7  │ :7100-7  │ :7100-7         │
+   └──────────┴──────────┴──────────┴─────────────────┘
+        ▲ KV Cache 传输（Mooncake / AscendDirect RDMA）
+        └── 32 张 D 卡属于同一个 HCCL world / 同一个 EP 域
 ```
 
 **几个容易被误解的点，先摆在前面：**
 
-1. **"4P1D" 不等于 5 个 HTTP 端点。** 因为用了 external DP LB（`--data-parallel-rank` 显式指定），每个 DP rank 都是**独立进程、独立 API server、独立端口**。所以 proxy 实际要配 4×4 = 16 个 prefiller 端点 + 16 个 decoder 端点。依据在 `vllm/entrypoints/cli/serve.py:79-81, 109-111`：`data_parallel_rank is not None` 即判定为 external LB，`api_server_count` 被强制为 1，而 `examples/external_online_dp/launch_online_dp.py` 会在一个节点上拉起 `dp_size_local` 个 `vllm serve` 进程，端口依次 `+1`。
+1. **"4P1D" 既不等于 5 台机器，也不等于 5 个 HTTP 端点。** 4 个 P 实例各占一台机器，1 个 D 实例独占四台机器，合计 8 台。而因为用了 external DP LB（`--data-parallel-rank` 显式指定），每个 DP rank 都是**独立进程、独立 API server、独立端口**，所以 proxy 实际要配 4×4 = **16 个 prefiller 端点** + 32×1 = **32 个 decoder 端点**。依据在 `vllm/entrypoints/cli/serve.py:79-81, 109-111`：`data_parallel_rank is not None` 即判定为 external LB，`api_server_count` 被强制为 1，而 `examples/external_online_dp/launch_online_dp.py` 会在一个节点上拉起 `dp_size_local` 个 `vllm serve` 进程，端口依次 `+1`。
 
-2. **EP 域 = DP × TP，不是 TP。** P 侧 EP=4×4=16，D 侧 EP=16×1=16，两边都是 256/16 = **每卡 16 个专家**。这个跨 DP 的 EP 通信域是怎么建起来的，是本文第 5 章的重点。
+2. **EP 域 = DP × TP，不是 TP。** P 侧 EP=4×2=**8**，每卡 256/8 = **32 个专家**；D 侧 EP=32×1=**32**，每卡 256/32 = **8 个专家**。注意 D 侧这个 32 卡的 EP 域是**横跨 4 台物理机**的——它不是"一台机器内部的事"，而是靠 `--data-parallel-address` 把 4 台机器上的 32 个独立进程拉进同一个 HCCL world。这个跨 DP（且跨机）的 EP 通信域是怎么建起来的，是本文第 5 章的重点。
 
-3. **P 和 D 的并行策略可以完全不同**，但受连接器约束：`P_tp >= D_tp` 且 `P_tp % D_tp == 0`（`mooncake_hybrid_connector.py:1491-1495`，以及设计文档 `docs/source/developer_guide/Design_Documents/disaggregated_prefill.md` 的 Limitations 一节）。这里 4 % 1 = 0，合法。
+3. **P 和 D 的并行策略可以完全不同**，但受连接器约束：`P_tp >= D_tp` 且 `P_tp % D_tp == 0`（`mooncake_hybrid_connector.py:1491-1495`，以及设计文档 `docs/source/developer_guide/Design_Documents/disaggregated_prefill.md` 的 Limitations 一节）。这里 2 % 1 = 0，合法。
 
 ---
 
 ## 1. 全景：一条 `vllm serve` 命令展开成了多少个进程
 
-以 P0 节点上 `--data-parallel-rank 0` 那一个实例为例（TP=4）：
+以 P0 节点上 `--data-parallel-rank 0` 那一个 DP rank 为例（TP=2）：
 
 ```
 python -m vllm serve ...                      ← 进程 0（front-end）
@@ -116,13 +126,19 @@ python -m vllm serve ...                      ← 进程 0（front-end）
 └── EngineCore-0  (DPEngineCoreProc)          ← 独立进程
     └── MultiprocExecutor
         ├── WorkerProc rank0 → NPUWorker → NPUModelRunner → NPU:0
-        ├── WorkerProc rank1 → NPUWorker → NPUModelRunner → NPU:1
-        ├── WorkerProc rank2 → NPUWorker → NPUModelRunner → NPU:2
-        └── WorkerProc rank3 → NPUWorker → NPUModelRunner → NPU:3
+        └── WorkerProc rank1 → NPUWorker → NPUModelRunner → NPU:1
             └── 每个 Worker 内还有 KVCacheSendingThread / RecvingThread（PD 连接器）
 ```
 
-一个 P 节点 4 个 DP rank，就是 4 组这样的树；整套 4P1D 共 80 张卡、80 个 WorkerProc、20 个 EngineCore 进程。
+一个 P 节点 4 个 DP rank，就是 4 组这样的树（每组 2 个 Worker）；D 侧每个节点 8 个 DP rank，每组只有 1 个 Worker。
+
+整套 4P1D 的进程账：
+
+| 侧 | 实例数 | 每实例 DP×TP | 卡数 | EngineCore 进程 | WorkerProc | API server |
+|---|---:|---|---:|---:|---:|---:|
+| P | 4（各占 1 台） | 4 × 2 | 4×8 = 32 | 16 | 32 | 16 |
+| D | 1（占 4 台） | 32 × 1 | 32 | 32 | 32 | 32 |
+| **合计** | **5** | — | **64** | **48** | **64** | **48** |
 
 启动过程按时间顺序可以切成 9 个阶段，下面逐个拆。
 
@@ -154,7 +170,7 @@ else:
     uvloop.run(run_server(args))       # ← 我们走这条
 ```
 
-因为命令行给了 `--data-parallel-rank`，走的是最后一条：**单 API server、单进程前端**。这也是为什么 4P1D 下要开 16+16 个端口给 proxy。
+因为命令行给了 `--data-parallel-rank`，走的是最后一条：**单 API server、单进程前端**。这也是为什么 4P1D 下要开 16+32 个端口给 proxy。
 
 ### 2.2 昇腾插件是怎么被"挂进去"的
 
@@ -284,15 +300,17 @@ if data_parallel_external_lb:
     self.data_parallel_hybrid_lb = False
 ```
 
-注意 **`data_parallel_size_local` 被强制成 1**。这就是 external DP 的本质：`--data-parallel-size 4` 只是告诉这个进程"整个 DP 组有 4 个成员"，而它自己只负责其中 1 个。`data_parallel_address` / `data_parallel_rpc_port`（`:2214-2238`）用于 4 个进程互相 rendezvous。
+注意 **`data_parallel_size_local` 被强制成 1**。这就是 external DP 的本质：P 侧 `--data-parallel-size 4` 只是告诉这个进程"整个 DP 组有 4 个成员"，而它自己只负责其中 1 个。`data_parallel_address` / `data_parallel_rpc_port`（`:2214-2238`）用于同组进程互相 rendezvous。
+
+**D 侧同理，但规模和跨机方式不同**：`--data-parallel-size 32`，32 个进程分布在 4 台机器上（每台 8 个），它们填的 `--data-parallel-address` 必须是同一个（D0 节点的 IP）。这是 D 实例能跨机组成**单个** DP 组的前提。
 
 **(4) `:2244-2295` `ParallelConfig(...)`** —— 这一坨里跟我们相关的：
 
 ```python
 parallel_config = ParallelConfig(
-    tensor_parallel_size = 4,
-    data_parallel_size = 4,
-    data_parallel_rank = 0..3,
+    tensor_parallel_size = 2,           # D 侧为 1
+    data_parallel_size = 4,             # D 侧为 32
+    data_parallel_rank = 0..3,          # D 侧为 0..31（跨 4 台机器连续编号）
     data_parallel_external_lb = True,
     data_parallel_size_local = 1,
     data_parallel_master_ip = <P 节点 IP>,
@@ -316,7 +334,7 @@ self.world_size = (self.pipeline_parallel_size
                    * self.prefill_context_parallel_size)
 ```
 
-**`world_size` 不含 DP**（4），而 `world_size_across_dp = world_size * data_parallel_size` = 16（`parallel.py:549-551`）。记住这两个数，第 5 章会用到。
+**`world_size` 不含 DP**（P 侧 = 2，D 侧 = 1），而 `world_size_across_dp = world_size * data_parallel_size`（P 侧 2×4 = **8**，D 侧 1×32 = **32**，见 `parallel.py:549-551`）。记住这两组数，第 5 章会用到。
 
 **(5) `:2509-2537` 组装 `VllmConfig`** —— `kv_transfer_config`（PD 的核心）、`compilation_config`、`additional_config`（昇腾私有配置的载体）都在这里进入。
 
@@ -432,9 +450,9 @@ def _validate_eplb_config(vllm_config):
 ```python
 # vllm/v1/engine/utils.py:1078-1084
 parallel_config     = vllm_config.parallel_config
-dp_size             = parallel_config.data_parallel_size          # 4
+dp_size             = parallel_config.data_parallel_size          # P:4   / D:32
 local_engine_count  = parallel_config.data_parallel_size_local    # 1
-dp_rank             = parallel_config.data_parallel_rank          # 0..3
+dp_rank             = parallel_config.data_parallel_rank          # P:0..3 / D:0..31
 host                = parallel_config.data_parallel_master_ip
 ```
 
@@ -459,7 +477,9 @@ return self.parallel_config.data_parallel_size > 1 and (
 )
 ```
 
-**这是 MoE + DP 的一个硬性要求**：DeepSeek-V4-Flash 是 MoE，即使用了 external LB，`dp_rank == 0` 的那个进程也必须额外拉起 DPCoordinator 进程做 **wave coordination**。原因是 EP 的 all-to-all 是**集合通信**——所有 DP rank 必须同步进入/退出 forward，否则 HCCL 直接死锁。所以 4 个 P 节点，每个节点的 `dp_rank=0` 进程都会多一个 coordinator 进程。
+**这是 MoE + DP 的一个硬性要求**：DeepSeek-V4-Flash 是 MoE，即使用了 external LB，`dp_rank == 0` 的那个进程也必须额外拉起 DPCoordinator 进程做 **wave coordination**。原因是 EP 的 all-to-all 是**集合通信**——所有 DP rank 必须同步进入/退出 forward，否则 HCCL 直接死锁。所以 4 个 P 节点各自是一个独立 DP 组，**每台机器上的 `dp_rank=0` 进程各多一个 coordinator，共 4 个**。
+
+**D 侧则只有 1 个 coordinator。** 32 个 DP rank 属于同一个 DP 组，全局 `dp_rank == 0` 只有一个进程，它落在 D0 节点上；D1/D2/D3 三台机器上一个 coordinator 都没有，wave 同步全靠连到 D0 的那个 zmq ROUTER。**D0 因此是整个 Decode 实例的单点——它没起来，其余三台会一直卡在握手。**
 
 **握手拓扑（`utils.py:1136-1156`）**：
 
@@ -474,7 +494,7 @@ else:
                             for i in range(dp_rank, dp_rank + local_engine_count)]
 ```
 
-`handshake_address` 由 `data_parallel_master_ip` + `data_parallel_rpc_port` 构成（`utils.py:1168-1172`），rank 0 起一个 `zmq.ROUTER` bind（`:1182-1184`），rank 1~3 连过去。**这就是 `--data-parallel-address` / `--data-parallel-rpc-port` 在 4 个进程里必须完全一致的原因。**
+`handshake_address` 由 `data_parallel_master_ip` + `data_parallel_rpc_port` 构成（`utils.py:1168-1172`），rank 0 起一个 `zmq.ROUTER` bind（`:1182-1184`），其余 rank 连过去（P 侧 rank 1–3，D 侧 rank 1–31）。**这就是 `--data-parallel-address` / `--data-parallel-rpc-port` 在同一 DP 组的所有进程里必须完全一致的原因**——对 D 侧而言，这个"所有进程"横跨 4 台机器。
 
 ### 4.2 EngineCore 子进程：`EngineCore.__init__`
 
@@ -528,7 +548,7 @@ def _init_data_parallel(self, vllm_config):
 
 ```python
 tp_size, pp_size, pcp_size = self._get_parallel_sizes()
-assert self.world_size == tp_size * pp_size * pcp_size          # :126  world_size = 4
+assert self.world_size == tp_size * pp_size * pcp_size          # :126  world_size = 2（D 侧 1）
 num_local_procs = self.local_world_size * max(1, self.parallel_config.data_parallel_size_local)
 set_multiprocessing_worker_envs(num_local_procs)                # :136
 
@@ -541,7 +561,7 @@ for local_rank in range(self.local_world_size):
         distributed_init_method=distributed_init_method, ...)    # :195-204
 ```
 
-到这一步，每个 EngineCore 只知道自己那 4 个 rank（0~3）。**跨 DP 的 rank 编号是在 Worker 内部完成的。**
+到这一步，每个 EngineCore 只知道自己那 2 个 rank（0\~1）；D 侧 TP=1，每个 EngineCore 更是只有 1 个 rank。**跨 DP 的 rank 编号是在 Worker 内部完成的。**
 
 ### 5.2 关键：跨 DP 的全局 HCCL 通信域是怎么建起来的
 
@@ -551,14 +571,14 @@ for local_rank in range(self.local_world_size):
 def _init_worker_distributed_environment(self) -> None:
     init_batch_invariance()
     init_distributed_environment(
-        self.parallel_config.world_size,     # 4
-        self.rank,                           # 0..3
+        self.parallel_config.world_size,     # 2（D 侧 1）
+        self.rank,                           # 0..1（D 侧恒为 0）
         self.distributed_init_method,
         self.local_rank,
         "hccl",                              # ← 后端是 HCCL
     )
     ensure_model_parallel_initialized(
-        self.parallel_config.tensor_parallel_size,           # 4
+        self.parallel_config.tensor_parallel_size,           # 2（D 侧 1）
         self.parallel_config.pipeline_parallel_size,         # 1
         self.parallel_config.prefill_context_parallel_size,  # 1
         self.parallel_config.decode_context_parallel_size,   # 1
@@ -567,7 +587,7 @@ def _init_worker_distributed_environment(self) -> None:
     ensure_ec_transfer_initialized(self.vllm_config)
 ```
 
-传进去的 `world_size` 只有 4。但 `init_distributed_environment` 内部有一段**改写**（`vllm/distributed/parallel_state.py:1606-1636`）：
+传进去的 `world_size` 只有 2。但 `init_distributed_environment` 内部有一段**改写**（`vllm/distributed/parallel_state.py:1606-1636`）：
 
 ```python
 if (config is not None
@@ -594,14 +614,25 @@ if (config is not None
 
 | DP rank | 进程内 local rank | 改写后 global rank | HCCL world_size |
 |---|---|---|---|
-| 0 | 0,1,2,3 | 0,1,2,3 | 16 |
-| 1 | 0,1,2,3 | 4,5,6,7 | 16 |
-| 2 | 0,1,2,3 | 8,9,10,11 | 16 |
-| 3 | 0,1,2,3 | 12,13,14,15 | 16 |
+| 0 | 0,1 | 0,1 | 8 |
+| 1 | 0,1 | 2,3 | 8 |
+| 2 | 0,1 | 4,5 | 8 |
+| 3 | 0,1 | 6,7 | 8 |
 
-四个**互相独立的 EngineCore 进程**下面的 16 个 Worker，通过 `data_parallel_master_ip:port` 这个 rendezvous 点，加入了**同一个 16 rank 的 HCCL world**。之后 `initialize_model_parallel` 里 `world_size = torch.distributed.get_world_size()` 拿到的就是 16 而不是 4。
+四个**互相独立的 EngineCore 进程**下面的 8 个 Worker，通过 `data_parallel_master_ip:port` 这个 rendezvous 点，加入了**同一个 8 rank 的 HCCL world**。之后 `initialize_model_parallel` 里 `world_size = torch.distributed.get_world_size()` 拿到的就是 8 而不是 2。
 
-> **实践含义**：`--data-parallel-address` 必须是 DP 组内所有节点都能路由到的 IP，`--data-parallel-rpc-port` 附近的若干端口（`get_next_dp_init_port` 会递增取端口，见 `parallel.py:578-584`）都不能被占用。启动卡在 "waiting for all ranks" 十有八九是这里。
+**D 实例是同一套机制，只是尺度和跨机范围完全不同**：`world_size = 1`，`data_parallel_size = 32`，于是 `rank = dp_rank × 1 + 0 = dp_rank`，32 个 rank 直接就是 32 个 dp_rank：
+
+| 节点 | 该节点上的 dp_rank | 改写后 global rank | HCCL world_size |
+|---|---|---|---|
+| D0 | 0–7 | 0–7 | 32 |
+| D1 | 8–15 | 8–15 | 32 |
+| D2 | 16–23 | 16–23 | 32 |
+| D3 | 24–31 | 24–31 | 32 |
+
+**这 32 个 rank 分布在 4 台物理机上，却处在同一个 HCCL world、同一个 EP 域里。** 换句话说，D 侧的 all-to-all 有相当一部分要走机间网络，而不是像 P 侧那样全在机内高速互联上——这是 4 节点 D 实例和单节点 D 实例在性能特征上最大的区别，`HCCL_BUFFSIZE`、RoCE 网卡配置在 D 侧因此比 P 侧更敏感。
+
+> **实践含义**：`--data-parallel-address` 必须是 DP 组内所有节点都能路由到的 IP，`--data-parallel-rpc-port` 附近的若干端口（`get_next_dp_init_port` 会递增取端口，见 `parallel.py:578-584`）都不能被占用。P 侧这个地址就是本机 IP（DP 组不跨机），**D 侧四台机器必须统一填 D0 的 IP**——填成各自本机 IP 是这类部署最常见的错误，现象是四台机器各自组了个 8 卡 world，然后集体卡在 "waiting for all ranks"。
 
 ### 5.3 vLLM 侧的通信域切分
 
@@ -612,17 +643,17 @@ if (config is not None
 all_ranks = torch.arange(world_size).reshape(
     -1, data_parallel_size, pipeline_model_parallel_size,
     prefill_context_model_parallel_size, tensor_model_parallel_size)
-# 我们的 P 实例：(1, 4, 1, 1, 4)
+# 我们的 P 实例：(1, 4, 1, 1, 2)；D 实例：(1, 32, 1, 1, 1)
 ```
 
 然后各维度分别 transpose 到最后再 unbind：
 
-| 组 | 代码位置 | group_ranks（P 实例，DP4×TP4） |
-|---|---|---|
-| `_TP` | `:1837` `all_ranks.view(-1, tp)` | `[0-3], [4-7], [8-11], [12-15]` |
-| `_DP` | `:1908` `transpose(1,4).reshape(-1, dp)` | `[0,4,8,12], [1,5,9,13], ...` |
-| `_EP` | `:1927-1936` `transpose(1,2).reshape(-1, dp*pcp*tp)` | **`[0..15]` 一个 16 卡组** |
-| `_EPLB` | `:1963-1978` 与 `_EP` 同 ranks，独立 PG | `[0..15]` |
+| 组 | 代码位置 | group_ranks（P 实例，DP4×TP2） | group_ranks（D 实例，DP32×TP1） |
+|---|---|---|---|
+| `_TP` | `:1837` `all_ranks.view(-1, tp)` | `[0,1], [2,3], [4,5], [6,7]` | `[0], [1], ... [31]`（退化） |
+| `_DP` | `:1908` `transpose(1,4).reshape(-1, dp)` | `[0,2,4,6], [1,3,5,7]` | `[0..31]` |
+| `_EP` | `:1927-1936` `transpose(1,2).reshape(-1, dp*pcp*tp)` | **`[0..7]` 一个 8 卡组** | **`[0..31]` 一个 32 卡组（跨 4 机）** |
+| `_EPLB` | `:1963-1978` 与 `_EP` 同 ranks，独立 PG | `[0..7]` | `[0..31]` |
 
 `_EP` 只在 MoE 模型下创建（`:1926` `if config.model_config is None or config.model_config.is_moe`）。`_EPLB` 单独建一个进程组的理由注释写得很清楚（`:1957-1960`）：**避免 EPLB 的 torch.distributed 调用和 MoE forward 的集合通信在同一个 PG 上互相插队导致死锁。**
 
@@ -631,7 +662,7 @@ all_ranks = torch.arange(world_size).reshape(
 `vllm_ascend/distributed/parallel_state.py:21-134` 的 `init_ascend_model_parallel` 在 vLLM 通信域之上再建几个：
 
 ```python
-world_size = torch.distributed.get_world_size()          # 16
+world_size = torch.distributed.get_world_size()          # P:8 / D:32
 backend    = torch.distributed.get_backend(get_world_group().device_group)   # hccl
 all_ranks  = torch.arange(world_size).reshape(-1, dp, pp, pcp, tp)   # :37-43
 
@@ -682,8 +713,10 @@ if mlp_tp_size > 0:       _MLP_TP   = _create_or_get_group(mlp_tp_size, "mlptp")
       ...
   ```
 
-  DeepSeek-V4 是 MLA，整个分支被跳过，`pd_tp_ratio` / `pd_head_ratio` 保持 1。**MLA 的 KV 是不分头的 latent 表示，P 侧 TP=4 的每一张卡都持有完整的 KV latent，D 侧 TP=1 直接整份拉走即可，不需要任何 head 维度的重排。** 这跟第 8.3 节 `tp_num_need_pulls = 1` 是同一件事的两个侧面。
-- **细粒度 TP 组**是 D 侧调优的常用手段。比如生产配置里常见的 `"finegrained_tp_config": {"lmhead_tensor_parallel_size": 16}`：D 侧 TP=1、DP=16，lm_head 那个 `[4096, 129280]` 的大矩阵在单卡上算太慢，就跨 DP 拉一个 16 卡的 TP 组专门算 lm_head。`_create_or_get_group`（`:102-118`）沿 DP 维度切分，`num_chunks = global_dp_size // group_size`。
+  DeepSeek-V4 是 MLA，整个分支被跳过，`pd_tp_ratio` / `pd_head_ratio` 保持 1。**MLA 的 KV 是不分头的 latent 表示，P 侧 TP=2 的每一张卡都持有完整的 KV latent，D 侧 TP=1 直接整份拉走即可，不需要任何 head 维度的重排。** 这跟第 8.3 节 `tp_num_need_pulls = 1` 是同一件事的两个侧面。
+- **细粒度 TP 组**是 D 侧调优的常用手段。比如生产配置里常见的 `"finegrained_tp_config": {"lmhead_tensor_parallel_size": 16}`：D 侧 TP=1、DP=32，lm_head 那个 `[4096, 129280]` 的大矩阵在单卡上算太慢，就跨 DP 拉 TP 组专门算 lm_head。`_create_or_get_group`（`:102-118`）沿 DP 维度切分，`num_chunks = global_dp_size // group_size` = 32 // 16 = **2 个 16 卡组**。
+
+  这里要留意一个 4 节点 D 实例特有的坑：**16 卡一组意味着每组恰好跨两台机器**（rank 0–15 = D0+D1，rank 16–31 = D2+D3），lm_head 的 all-gather 因此走机间网络。如果想让这个组留在机内，得把 `lmhead_tensor_parallel_size` 设成 8。
 
 ### 5.5 设备绑定
 
@@ -785,18 +818,23 @@ self.physical_expert_start = self.ep_rank * self.n_local_physical_experts  # :29
 self.physical_expert_end   = self.physical_expert_start + self.n_local_physical_experts
 ```
 
-代入我们的配置（无冗余专家）：
+代入我们的配置（无冗余专家）。**P、D 两侧的 EP 尺寸不同，专家切分粒度也就不同**：
 
 ```
-ep_size = 16
-n_physical_experts = 256
-n_local_physical_experts = 256 / 16 = 16
-rank k 持有专家 [16k, 16k+16)
+P 实例：ep_size = DP4 × TP2 = 8
+        n_local_physical_experts = 256 / 8 = 32
+        rank k 持有专家 [32k, 32k+32)
+
+D 实例：ep_size = DP32 × TP1 = 32
+        n_local_physical_experts = 256 / 32 = 8
+        rank k 持有专家 [8k, 8k+8)
 ```
 
-**每张卡只加载 16 个专家的权重**。这就是 EP 的本质：把 256 个专家的权重按 rank 切开，token 通过 all-to-all 送到持有目标专家的卡上算完再送回来。
+**P 侧每卡 32 个专家、D 侧每卡 8 个专家**——同一份权重在两侧按不同粒度切开，这正是 PD 分离允许两边并行策略不同带来的自由度：P 是计算密集的大 batch prefill，专家切得粗一些、all-to-all 少一些更划算；D 是访存密集的小 batch decode，专家切得细才能把权重读取摊薄到更多卡上。
 
-如果开了 EPLB，`num_redundant_experts` 会 > 0，比如设 16 则 `n_physical_experts = 272`，每卡 17 个物理专家，其中一部分是热点逻辑专家的副本。
+顺带一提，D 侧这个 32 卡 EP 域跨了 4 台机器，all-to-all 有相当比例走机间网络，这是 D 侧要调大 `HCCL_BUFFSIZE` 的直接原因。
+
+如果开了 EPLB，`num_redundant_experts` 会 > 0：以 D 侧为例，设 32 则 `n_physical_experts = 288`，每卡 9 个物理专家，其中一部分是热点逻辑专家的副本。
 
 **Hash 路由层**（`model.py:315-330`）是 DeepSeek-V4 的新特性：前 `num_hash_layers=3` 层用一张 `[vocab_size, num_experts_per_tok]` 的 int32 查找表 `tid2eid` 直接由 token id 决定专家，不走 gate 打分：
 
@@ -989,8 +1027,8 @@ P 侧：
   "kv_port": "36000",
   "engine_id": "0",
   "kv_connector_extra_config": {
-    "prefill": {"dp_size": 4,  "tp_size": 4},
-    "decode":  {"dp_size": 16, "tp_size": 1}
+    "prefill": {"dp_size": 4,  "tp_size": 2},
+    "decode":  {"dp_size": 32, "tp_size": 1}
   }
 }
 ```
@@ -1050,16 +1088,29 @@ device_index = self.pp_rank * self.tp_size + self.tp_rank
 self.handshake_port = self.side_channel_port + device_index
 ```
 
-代入 P 实例（`kv_port=36000`, TP=4, PP=1）：
+代入 P 实例（`kv_port=36000`, TP=2, PP=1）：
 
-| DP rank | side_channel_port | 该实例占用的 handshake 端口 |
+| DP rank | side_channel_port | 该 rank 占用的 handshake 端口 |
 |---|---|---|
-| 0 | 36000 | 36000–36003 |
-| 1 | 36004 | 36004–36007 |
-| 2 | 36008 | 36008–36011 |
-| 3 | 36012 | 36012–36015 |
+| 0 | 36000 | 36000–36001 |
+| 1 | 36002 | 36002–36003 |
+| 2 | 36004 | 36004–36005 |
+| 3 | 36006 | 36006–36007 |
 
-**一个 P 节点吃掉 36000–36015 共 16 个端口。** 官方文档给的选港建议（`docs/source/tutorials/features/pd_disaggregation_mooncake_multi_node.md`）：昇腾上 Mooncake 用 AscendDirectTransport 做 RDMA，会在 `[20000, 20000 + npu_per_node × 1000)` 里随机取端口；16 卡节点即 20000–35999，所以 **`kv_port` 必须 ≥ 36000**。否则会偶发 `zmq.error.ZMQError: Address already in use`。
+**一个 P 节点吃掉 36000–36007 共 8 个端口**（= `dp_size × tp_size`，正好等于卡数）。
+
+**D 实例要特别注意**：公式里用的是**全局** `data_parallel_rank`（0–31）而不是节点内的 local rank，所以 `kv_port=36400` 时，四台机器的占用是天然错开的：
+
+| 节点 | dp_rank | 该节点占用的 handshake 端口 |
+|---|---|---|
+| D0 | 0–7 | 36400–36407 |
+| D1 | 8–15 | 36408–36415 |
+| D2 | 16–23 | 36416–36423 |
+| D3 | 24–31 | 36424–36431 |
+
+也就是说**四台 D 机器填同一个 `kv_port` 就行，不需要（也不应该）人为错开**——一旦手工给 D1 改成 36500，它算出的端口就和 P 侧 metadata 里记录的对不上。整个 D 实例占用 36400–36431 共 32 个端口，但每台机器实际只监听其中 8 个。
+
+官方文档给的选港建议（`docs/source/tutorials/features/pd_disaggregation_mooncake_multi_node.md`）：昇腾上 Mooncake 用 AscendDirectTransport 做 RDMA，会在 `[20000, 20000 + npu_per_node × 1000)` 里随机取端口；**8 卡节点即 20000–27999，所以 `kv_port` 必须 ≥ 28000**（本文脚本取 36000 起，留了额外余量）。否则会偶发 `zmq.error.ZMQError: Address already in use`。
 
 **非对称 TP 的 pull 倍率（`:1578-1583`）**：
 
@@ -1072,7 +1123,7 @@ else:
     self.tp_num_need_pulls = num_d_block_heads // num_p_block_heads
 ```
 
-DeepSeek-V4 是 MLA，`tp_num_need_pulls = 1` —— **MLA 的 KV 是不按头切分的（latent 表示，`num_key_value_heads=1`），所以 D 侧一个 rank 只需从 P 侧一个 rank 拉一份，非对称 TP（4→1）零额外代价**。这是 MLA 系模型做 PD 分离的一大结构性红利；GQA 模型这里就得 pull 多份再拼。
+DeepSeek-V4 是 MLA，`tp_num_need_pulls = 1` —— **MLA 的 KV 是不按头切分的（latent 表示，`num_key_value_heads=1`），所以 D 侧一个 rank 只需从 P 侧一个 rank 拉一份，非对称 TP（2→1）零额外代价**。这是 MLA 系模型做 PD 分离的一大结构性红利；GQA 模型这里就得 pull 多份再拼。
 
 ### 8.4 `register_kv_caches`：注册 buffer + 拉起收发线程
 
@@ -1132,7 +1183,7 @@ while not ready_event.is_set():
 
 ```
 1. Client ──► Proxy /v1/completions
-2. Proxy.select_prefiller()  → 从 16 个 P 端点里按负载选一个
+2. Proxy.select_prefiller()  → 从 16 个 P 端点（4 台 × 4 DP rank）里按负载选一个
      优先级函数：entry.active_tokens + entry.active_kv_cache * 0.3
      （examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:304-309）
    转发时注入 kv_transfer_params = {do_remote_decode: True,
@@ -1148,7 +1199,7 @@ while not ready_event.is_set():
              remote_port: side_channel_port,
              remote_ptp_size: tp_size,
              last_token_id, num_prompt_blocks, ...}
-4. Proxy.select_decoder() → 转发给某个 D 端点
+4. Proxy.select_decoder() → 转发给 32 个 D 端点（4 台 × 8 DP rank）中的一个
 5. D 节点 scheduler：
    ├── connector.get_num_new_matched_tokens()  (:1335-1370)
    │     params["do_remote_prefill"] → 返回 (count, True)，异步加载
@@ -1234,7 +1285,9 @@ return await serve_http(...)                                     # :550
 
 到这一步，`/health` 才返回 200，proxy 才能把这个端点纳入调度。
 
-**整个 4P1D 集群的就绪顺序**：80 个 Worker 各自完成加载→profiling→建链→图捕获 → 20 个 EngineCore 就绪 → 20 个 API server 监听 → 最后启动 proxy。**proxy 必须最后起**，否则会把请求打到还没 ready 的端点上。
+**整个 4P1D 集群的就绪顺序**：64 个 Worker（P 32 + D 32）各自完成加载→profiling→建链→图捕获 → 48 个 EngineCore 就绪 → 48 个 API server 监听 → 最后启动 proxy。**proxy 必须最后起**，否则会把请求打到还没 ready 的端点上。
+
+跨机的 D 实例还多一层顺序约束：**D0 要先起**（它持有 DPCoordinator 和 DP 组的 zmq ROUTER），D1\~D3 才连得上。四台 D 机器同时敲命令通常也能成——连不上会重试——但排障时按 D0 → D1/D2/D3 的顺序起，日志会干净很多。
 
 ---
 
@@ -1250,7 +1303,7 @@ return await serve_http(...)                                     # :550
  │ create_engine_config()
  │ ├─ pre_register_and_update()      注入 "ascend" 量化选项 + 全局 patch
  │ ├─ create_model_config()          读 HF config，is_moe / is_deepseek_mla / use_compress
- │ ├─ ParallelConfig(dp=4, tp=4, enable_expert_parallel=True)
+ │ ├─ ParallelConfig(dp=4, tp=2, EP=True)   ← D 侧 dp=32, tp=1
  │ └─ VllmConfig.__post_init__
  │     ├─ apply_config_platform_defaults()
  │     └─ check_and_update_config()  ← 10 步昇腾改写
@@ -1268,9 +1321,9 @@ return await serve_http(...)                                     # :550
  │             │ load_general_plugins()   注册 connector / model / loader
  │             │ DPEngineCoreProc._init_data_parallel()  stateless DP group (CPU)
  │             │ MultiprocExecutor._init_executor()
- │             │ └─ fork 4 × WorkerProc
+ │             │ └─ fork 2 × WorkerProc（D 侧 1 ×）
  │             │
- │             ├──────────► [WorkerProc × 4]
+ │             ├──────────► [WorkerProc × 2]
  │             │             │ NPUWorker.__init__()
  │             │             │ ├─ adapt_patch()
  │             │             │ ├─ register_ascend_customop()
@@ -1279,17 +1332,17 @@ return await serve_http(...)                                     # :550
  │             │             │ ├─ torch.npu.set_device()
  │             │             │ ├─ MemorySnapshot 基线
  │             │             │ ├─ init_distributed_environment("hccl")
- │             │             │ │   ★ rank += dp_rank × 4 ; world_size = 16
+ │             │             │ │   ★ rank += dp_rank × 2 ; world_size = 8
  │             │             │ │   ★ rendezvous @ dp_master_ip:dp_init_port
- │             │             │ │   → 16 卡加入同一 HCCL world
+ │             │             │ │   → 8 卡加入同一 HCCL world（D 侧 32 卡，跨 4 机）
  │             │             │ ├─ ensure_model_parallel_initialized()
- │             │             │ │   → _TP[4] / _DP[4] / _EP[16] / _EPLB[16]
+ │             │             │ │   → _TP[2] / _DP[4] / _EP[8] / _EPLB[8]
  │             │             │ ├─ init_ascend_model_parallel()
- │             │             │ │   → mc2[16] / (p_tp) / otp / lmheadtp / emtp / mlptp
+ │             │             │ │   → mc2[8] / (p_tp) / otp / lmheadtp / emtp / mlptp
  │             │             │ └─ NPUModelRunner(vllm_config, device)
  │             │             │ load_model()
  │             │             │ └─ AscendDeepseekV4ForCausalLM
- │             │             │    DeepseekV4MoE: ep_size=16, 每卡 16/256 专家
+ │             │             │    DeepseekV4MoE: ep_size=8, 每卡 32/256 专家
  │             │             │    MTP drafter 一并加载
  │             │             ▼
  │             │ determine_available_memory()  ← 各 rank profiling
@@ -1317,16 +1370,16 @@ return await serve_http(...)                                     # :550
  │ init_app_state()  deepseek_v4 tokenizer / reasoning / tool parser
  └─ uvicorn 监听 :7100+i   → /health 200
 
-[全集群]  80 Worker ready → 20 API server ready → 最后启动 Proxy
+[全集群]  64 Worker ready → 48 API server ready → 最后启动 Proxy
 ```
 
 ---
 
 ## 12. 可直接改用的 4P1D 部署脚本
 
-### 12.1 P 节点（4 台，每台 16 卡，DP4 × TP4，EP=16）
+### 12.1 P 节点（4 台，每台 8 卡，每台一个独立实例：DP4 × TP2，EP=8）
 
-`run_dp_template.sh`（在 P0~P3 上分别把 `local_ip` 改成本机 IP，`kv_port` 改成 36000/36100/36200/36300，`engine_id` 改成 0/1/2/3）：
+`run_dp_template.sh`（在 P0\~P3 上分别把 `local_ip` 改成本机 IP，`kv_port` 改成 36000/36100/36200/36300，`engine_id` 改成 0/1/2/3）：
 
 ```bash
 #!/bin/bash
@@ -1345,7 +1398,7 @@ export TASK_QUEUE_ENABLE=1
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-export VLLM_ASCEND_ENABLE_FUSED_MC2=1      # A3 上启用融合 MC2
+export VLLM_ASCEND_ENABLE_FUSED_MC2=1      # 融合 MC2，按芯片代次决定是否开
 export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 export VLLM_RPC_TIMEOUT=3600
 export ASCEND_RT_VISIBLE_DEVICES=$1        # 由 launch_online_dp.py 计算
@@ -1381,21 +1434,21 @@ vllm serve /models/DeepSeek-V4-Flash-w8a8-mtp \
       "kv_port": "36000",
       "engine_id": "0",
       "kv_connector_extra_config": {
-          "prefill": {"dp_size": 4,  "tp_size": 4},
-          "decode":  {"dp_size": 16, "tp_size": 1}
+          "prefill": {"dp_size": 4,  "tp_size": 2},
+          "decode":  {"dp_size": 32, "tp_size": 1}
       }
   }'
 ```
 
-拉起（每台 P 节点各执行一次）：
+拉起（每台 P 节点各执行一次，`--dp-address` 填**本机** IP——P 侧每台机器自成一个 DP 组）：
 
 ```bash
 python launch_online_dp.py \
-  --dp-size 4 --tp-size 4 --dp-size-local 4 --dp-rank-start 0 \
+  --dp-size 4 --tp-size 2 --dp-size-local 4 --dp-rank-start 0 \
   --dp-address 192.0.0.1 --dp-rpc-port 12321 --vllm-start-port 7100
 ```
 
-会起 4 个进程，端口 7100–7103，卡分别是 `0-3` / `4-7` / `8-11` / `12-15`。
+会起 4 个进程，端口 7100–7103，卡分别是 `0-1` / `2-3` / `4-5` / `6-7`。
 
 > `enable_dsa_cp` 只对带 indexer 的模型生效（`utils.py:1325-1334` 检查 `hf_text_config.index_topk` 是否存在），DeepSeek-V4 满足条件；换成非 DSA 模型时这个开关会被静默忽略。
 
@@ -1404,21 +1457,28 @@ python launch_online_dp.py \
 启动前建议先跑一遍算术：
 
 ```
-P 单实例：dp_size(4) × tp_size(4) = 16 卡 = 一台 A3 的全部  ✓
-          EP = 16，256 / 16 = 每卡 16 个专家                ✓
-          kv_port 占用 36000 + [0, 4×4) = 36000–36015       ✓
-D 单实例：dp_size(16) × tp_size(1) = 16 卡                  ✓
-          EP = 16，同样每卡 16 个专家                        ✓
-          kv_port 占用 36400 + [0, 16×1) = 36400–36415      ✓
-prefill.tp_size(4) % decode.tp_size(1) == 0                 ✓
+P 单实例：dp_size(4) × tp_size(2) = 8 卡 = 一台 P 节点的全部     ✓
+          共 4 个 P 实例，各占一台机器，互不通信                 ✓
+          EP = 8，256 / 8 = 每卡 32 个专家                      ✓
+          kv_port 占用 36000 + [0, 4×2) = 36000–36007          ✓
+D 单实例：dp_size(32) × tp_size(1) = 32 卡 = 4 台 D 节点        ✓
+          每台 dp_size_local = 8，dp_rank_start = 0/8/16/24     ✓
+          4 台共用一个 dp_address（D0 的 IP）、一个 engine_id    ✓
+          EP = 32，256 / 32 = 每卡 8 个专家                     ✓
+          kv_port 占用 36400 + [0, 32×1) = 36400–36431         ✓
+          （按全局 dp_rank 分配，四台机器自动错开，无需手工改）
+约束：    prefill.tp_size(2) >= decode.tp_size(1) 且整除        ✓
+整机账：  4 台 P + 4 台 D = 8 台 × 8 卡 = 64 卡                 ✓
 ```
 
-### 12.2 D 节点（1 台，16 卡，DP16 × TP1，EP=16）
+### 12.2 D 节点（4 台，每台 8 卡，合起来是**一个**实例：DP32 × TP1，EP=32）
+
+和 P 侧最大的不同：**这四台机器跑的是同一个实例**，所以下面这份脚本四台都用，只改两处——`local_ip` 改成本机 IP，`--dp-rank-start` 改成 0 / 8 / 16 / 24。`--dp-address`、`--dp-size`、`kv_port`、`engine_id` 四台必须完全一致。
 
 ```bash
 #!/bin/bash
 nic_name="eth0"
-local_ip="192.0.0.5"
+local_ip="192.0.0.5"                       # ← 每台改这里（D0~D3: .5/.6/.7/.8）
 
 export HCCL_IF_IP=$local_ip
 export GLOO_SOCKET_IFNAME=$nic_name
@@ -1426,7 +1486,7 @@ export TP_SOCKET_IFNAME=$nic_name
 export HCCL_SOCKET_IFNAME=$nic_name
 export HCCL_EXEC_TIMEOUT=204
 export HCCL_CONNECT_TIMEOUT=120
-export HCCL_BUFFSIZE=1500                  # D 侧 MC2 buffer 要更大
+export HCCL_BUFFSIZE=1500                  # D 侧 EP 域跨 4 机，MC2 buffer 要更大
 export TASK_QUEUE_ENABLE=1
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
@@ -1472,19 +1532,34 @@ vllm serve /models/DeepSeek-V4-Flash-w8a8-mtp \
       "kv_port": "36400",
       "engine_id": "4",
       "kv_connector_extra_config": {
-          "prefill": {"dp_size": 4,  "tp_size": 4},
-          "decode":  {"dp_size": 16, "tp_size": 1}
+          "prefill": {"dp_size": 4,  "tp_size": 2},
+          "decode":  {"dp_size": 32, "tp_size": 1}
       }
   }'
 ```
 
+四台机器分别执行（注意 `--dp-size` 恒为 32、`--dp-address` 恒为 D0 的 IP，只有 `--dp-rank-start` 递增）：
+
 ```bash
+# D0（192.0.0.5）—— 必须先起，它持有 DPCoordinator 和 DP 组的 zmq ROUTER
 python launch_online_dp.py \
-  --dp-size 16 --tp-size 1 --dp-size-local 16 --dp-rank-start 0 \
+  --dp-size 32 --tp-size 1 --dp-size-local 8 --dp-rank-start 0 \
   --dp-address 192.0.0.5 --dp-rpc-port 12321 --vllm-start-port 7100
+
+# D1（192.0.0.6）
+python launch_online_dp.py \
+  --dp-size 32 --tp-size 1 --dp-size-local 8 --dp-rank-start 8 \
+  --dp-address 192.0.0.5 --dp-rpc-port 12321 --vllm-start-port 7100
+
+# D2（192.0.0.7）：--dp-rank-start 16
+# D3（192.0.0.8）：--dp-rank-start 24
 ```
 
+每台起 8 个进程、端口 7100–7107、每进程独占 1 张卡，全集群 32 个 decoder 端点。
+
 ### 12.3 Proxy（最后启动）
+
+16 个 prefiller 端点（4 台 × 4 DP rank）+ 32 个 decoder 端点（4 台 × 8 DP rank）：
 
 ```bash
 python examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py \
@@ -1495,24 +1570,28 @@ python examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py \
                     192.0.0.4 192.0.0.4 192.0.0.4 192.0.0.4 \
   --prefiller-ports 7100 7101 7102 7103  7100 7101 7102 7103 \
                     7100 7101 7102 7103  7100 7101 7102 7103 \
-  --decoder-hosts   192.0.0.5 192.0.0.5 ... (×16) \
-  --decoder-ports   7100 7101 7102 7103 7104 7105 7106 7107 \
-                    7108 7109 7110 7111 7112 7113 7114 7115
+  --decoder-hosts   192.0.0.5 ×8  192.0.0.6 ×8 \
+                    192.0.0.7 ×8  192.0.0.8 ×8 \
+  --decoder-ports   7100 7101 7102 7103 7104 7105 7106 7107   （每台重复一遍）
 ```
+
+> `×8` 是为了写得下的省略，实际要把主机名逐个列满 32 个。**注意 decoder 端口在每台机器上都是 7100–7107**——端口由 `--vllm-start-port` + 节点内序号决定，跟全局 dp_rank 无关；真正靠全局 dp_rank 区分的是上一节那组 handshake 端口。这两套端口容易混，是这类部署的高频错点。
 
 ### 12.4 关键参数一致性检查表
 
 | 项 | 约束 | 出处 |
 |---|---|---|
 | `kv_connector_extra_config` | P/D 两侧逐字段完全相同 | `_get_prefill_decode_size` `:1587-1607` |
-| `prefill.tp_size >= decode.tp_size` 且整除 | 4 ÷ 1 = 4 ✓ | `:1491-1495` + 设计文档 Limitations |
-| `engine_id` | 5 个实例互不相同 | `MooncakeAgentMetadata.engine_id` |
-| `kv_port` | 各实例相隔 ≥ `dp_size × tp_size`，且 ≥ 36000（16 卡节点） | `:1556-1563` + 部署文档 |
-| `--data-parallel-address/rpc-port` | 同一 DP 组内所有进程完全一致 | `utils.py:1168-1172` |
+| `prefill.tp_size >= decode.tp_size` 且整除 | 2 ÷ 1 = 2 ✓ | `:1491-1495` + 设计文档 Limitations |
+| `engine_id` | **5 个实例**互不相同；D 实例的 4 台机器共用同一个 | `MooncakeAgentMetadata.engine_id` |
+| `kv_port` | 各实例相隔 ≥ `dp_size × tp_size`，且 ≥ 28000（8 卡节点）；D 侧 4 台填同一个值 | `:1556-1563` + 部署文档 |
+| `--data-parallel-address/rpc-port` | 同一 DP 组内所有进程完全一致（D 侧 = 跨 4 台机器统一填 D0） | `utils.py:1168-1172` |
+| `--dp-size` / `--dp-rank-start` | D 侧四台 `--dp-size` 恒为 32，`--dp-rank-start` 取 0/8/16/24 且不重叠 | `launch_online_dp.py` |
 | MTP `num_speculative_tokens` | 非 Mamba 模型：P 侧必须 = 1，D 侧 ≥ 1 | 部署文档 note |
 | `--block-size` | P/D 相同（这里 32） | KV block 布局需对齐 |
 | `--max-model-len` | P/D 相同 | 同上 |
 | 芯片代次 | P/D 不能混（不支持 A2 P + A3 D） | 设计文档 Limitations |
+| 机器账 | 4 台 P（各 1 实例）+ 4 台 D（共 1 实例）= 8 台 64 卡 | 本文 0.2 节 |
 
 ---
 
@@ -1521,12 +1600,14 @@ python examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py \
 | 现象 | 大概率原因 | 定位/修复 |
 |---|---|---|
 | 卡在 "waiting for all ranks to join" | DP rendezvous 不通 | 检查 `--data-parallel-address` 可路由、`--data-parallel-rpc-port` 及其后续若干端口空闲（`get_next_dp_init_port` 会递增，`parallel.py:578-584`） |
-| `zmq.error.ZMQError: Address already in use` | `kv_port` 落在 AscendDirect 随机端口区 | 16 卡节点 `kv_port ≥ 36000`；同时确认各实例间隔 ≥ `dp×tp` |
+| `zmq.error.ZMQError: Address already in use` | `kv_port` 落在 AscendDirect 随机端口区 | 8 卡节点 `kv_port ≥ 28000`；同时确认各实例间隔 ≥ `dp×tp` |
 | `Timeout waiting for KV Cache thread to be ready` | Mooncake transfer engine 起不来 | 5 分钟硬超时（`:1750`）。检查 `LD_LIBRARY_PATH` 含 mooncake so、RDMA 网卡 `hccn_tool -i N -link -g` 为 UP |
 | `prefill_tp_size must be >= decode_tp_size` | P/D TP 配反 | `:1491-1495` |
 | `Upstream EPLB is only supported by Model Runner V2` | V1 runner 用了 `--enable-eplb` | 改用 `additional_config.eplb_config` + `DYNAMIC_EPLB` 环境变量（`platform.py:810-811`） |
 | `Async EPLB is not supported by Model Runner V2 on Ascend yet` | V2 下设了 `eplb_config.use_async` | 置 false（`platform.py:792-795`） |
-| DP 组内某 rank hang 在 forward | MoE 集合通信不同步 | 确认 `dp_rank==0` 的 DPCoordinator 进程存活（MoE + DP > 1 必需，`vllm/config/vllm.py:714-718`） |
+| DP 组内某 rank hang 在 forward | MoE 集合通信不同步 | 确认 `dp_rank==0` 的 DPCoordinator 进程存活（MoE + DP > 1 必需，`vllm/config/vllm.py:714-718`）。D 侧这个进程只在 D0 上 |
+| D 侧四台机器各自组成 8 卡 world，集体卡在 "waiting for all ranks" | 四台的 `--dp-address` 填了各自本机 IP | 统一填 D0 的 IP；`--dp-size` 四台都必须是 32，不是 8 |
+| D 侧 `dp_rank` 冲突或缺号 | `--dp-rank-start` 填重或跳号 | 必须是 0/8/16/24，与 `--dp-size-local 8` 严格衔接 |
 | `Free memory ... is less than desired GPU memory utilization` | 卡上有残留进程 | `npu-smi info`，或调低 `--gpu-memory-utilization` |
 | D 侧启动特别慢（数分钟无输出） | `FULL_DECODE_ONLY` 图捕获中 | 正常。可临时加 `--enforce-eager` 验证其他环节 |
 | `local_world_size exceeds assigned_physical_gpu_ids` | `ASCEND_RT_VISIBLE_DEVICES` 与 `dp_size_local × tp_size` 不匹配 | `worker.py:382-391` |
@@ -1604,14 +1685,16 @@ python examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py \
 
 ---
 
-## 15. 五个值得单独记住的结论
+## 15. 六个值得单独记住的结论
+
+0. **"4P1D" 数的是实例，不是机器。** 本文这套是 4 个 Prefill 实例（每个 DP4×TP2，各占一台 8 卡机）+ 1 个 Decode 实例（DP32×TP1，横跨四台 8 卡机），物理上 8 台 64 卡。一个实例可以小于一台机器，也可以大于一台机器——决定边界的是"哪些进程共享同一个 `--data-parallel-address`"，而不是机箱。
 
 1. **昇腾适配零侵入 vLLM 源码**，全靠两组 entry point + 运行时 monkey patch。理解 vllm-ascend 的第一步是理解 `check_and_update_config` 这个"配置改写总闸"，它决定了 worker 类、scheduler 类、custom op、图模式、all2all 后端。
 
-2. **EP 跨 DP 的通信域是靠 `init_distributed_environment` 里那七行 rank 改写建起来的**（`parallel_state.py:1606-1636`）：`rank = dp_rank × world_size + rank`，`world_size = world_size_across_dp`，rendezvous 点是 `data_parallel_master_ip`。4 个互相独立的 EngineCore 进程因此共享一个 16 rank 的 HCCL world。这是理解 EP+DP 部署的分水岭。
+2. **EP 跨 DP 的通信域是靠 `init_distributed_environment` 里那七行 rank 改写建起来的**（`parallel_state.py:1606-1636`）：`rank = dp_rank × world_size + rank`，`world_size = world_size_across_dp`，rendezvous 点是 `data_parallel_master_ip`。P 侧 4 个互相独立的 EngineCore 进程因此共享一个 8 rank 的 HCCL world；D 侧则是 **32 个跨 4 台机器的 EngineCore 共享一个 32 rank 的 world**。这是理解 EP+DP 部署的分水岭，也是"1D 可以由多台机器组成"这件事在代码里的落点。
 
-3. **MoE + DP 强制需要 DPCoordinator**，即使在 external LB 下也是。EP 的 all-to-all 是集合通信，DP rank 必须同步进出 forward，否则死锁。
+3. **MoE + DP 强制需要 DPCoordinator**，即使在 external LB 下也是。EP 的 all-to-all 是集合通信，DP rank 必须同步进出 forward，否则死锁。P 侧四个独立 DP 组各有一个 coordinator，D 侧整个实例只有一个（在 D0 上）。
 
 4. **P 和 D 跑的是同一份权重，但几乎所有运行时路径都不同**：MoE 通信方式（ALLTOALL vs MC2）、图模式（eager vs FULL_DECODE_ONLY）、scheduler（默认 vs recompute）、KV 连接器角色（发送线程 vs 接收线程）、显存水位、MTP 深度（1 vs 3）。PD 分离的收益就来自这些差异化。
 
-5. **DeepSeek-V4-Flash 的 MLA + 压缩 KV 结构对 PD 特别友好**：`is_deepseek_mla=True` 让 `tp_num_need_pulls = 1`，非对称 TP（P tp=4 → D tp=1）不产生任何额外的 KV 重组开销；`compress_ratios` 把 20 层的 KV 压到 1/128，1M 上下文下要传输的 KV 量比 V3.2 小一个量级，直接决定了 PD 之间 RDMA 带宽是否成为瓶颈。
+5. **DeepSeek-V4-Flash 的 MLA + 压缩 KV 结构对 PD 特别友好**：`is_deepseek_mla=True` 让 `tp_num_need_pulls = 1`，非对称 TP（P tp=2 → D tp=1）不产生任何额外的 KV 重组开销；`compress_ratios` 把 20 层的 KV 压到 1/128，1M 上下文下要传输的 KV 量比 V3.2 小一个量级，直接决定了 PD 之间 RDMA 带宽是否成为瓶颈。
