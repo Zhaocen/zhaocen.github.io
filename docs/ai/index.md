@@ -6,16 +6,10 @@
 
 <div class="grid cards" markdown>
 
--   __[vLLM 笔记](vllm.md)__
+-   __[vLLM 启动服务全流程代码级剖析](vllm-startup-internals.md)__
 
     ---
 
-    PagedAttention、连续批处理、调度器等核心机制的阅读笔记。
-
--   __[昇腾适配](ascend.md)__
-
-    ---
-
-    vllm-ascend 插件在 NPU 平台上的适配要点与常见问题。
+    以 DeepSeek-V4-Flash 在昇腾 NPU 上 4P1D + EP 部署为例，逐阶段拆解 vllm serve 的启动链路。
 
 </div>
