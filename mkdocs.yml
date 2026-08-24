@@ -170,6 +170,7 @@ nav:
   - AI 推理:
       - ai/index.md
       - vLLM 启动服务全流程代码级剖析: ai/vllm-startup-internals.md
+      - DeepSeek-V4-Flash 推理调用全过程: ai/deepseek-v4-flash-inference-walkthrough.md
   - 模型评测:
       - benchmark/index.md
       - AISBench 使用指南: benchmark/aisbench.md
