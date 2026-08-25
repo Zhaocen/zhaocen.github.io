@@ -12,6 +12,12 @@
 
     以 DeepSeek-V4-Flash 在昇腾 NPU 上 4P1D + EP 部署为例，逐阶段拆解 vllm serve 的启动链路。
 
+-   __[vLLM 的 KV Cache 机制剖析](vllm-kv-cache.md)__
+
+    ---
+
+    PagedAttention 分页管理、Prefix Caching 链式哈希、profiling 显存预算，以及混合注意力架构下的 Hybrid KV Cache Manager。
+
 -   __[DeepSeek-V4-Flash 推理调用全过程](deepseek-v4-flash-inference-walkthrough.md)__
 
     ---
