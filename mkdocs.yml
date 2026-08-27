@@ -171,6 +171,7 @@ nav:
       - ai/index.md
       - vLLM 启动服务全流程代码级剖析: ai/vllm-startup-internals.md
       - vLLM 的 KV Cache 机制剖析: ai/vllm-kv-cache.md
+      - 从 KV Cache 到 PagedAttention：vLLM Ascend 代码级拆解: ai/vllm-ascend-kv-cache-paged-attention-internals.md
       - DeepSeek-V4-Flash 推理调用全过程: ai/deepseek-v4-flash-inference-walkthrough.md
   - 模型评测:
       - benchmark/index.md
