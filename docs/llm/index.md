@@ -10,6 +10,18 @@
 
 <div class="grid cards" markdown>
 
+-   __[DeepSeek-V4-Flash 模型结构解析](deepseek-v4-flash-architecture.md)__
+
+    ---
+
+    4 路 mHC 残差流、CSA/HCA 混合压缩注意力、全层 MoE，以及 MTP 草稿层的结构与张量流。
+
+-   __[GLM-5.2 模型结构解析](glm-5.2-architecture.md)__
+
+    ---
+
+    从配置到源码拆解 78 层 MoE、MLA、DSA、IndexShare 和 MTP 的完整结构。
+
 -   :material-graph-outline:{ .lg .middle } __模型架构__
 
     ---

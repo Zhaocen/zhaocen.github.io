@@ -166,6 +166,7 @@ nav:
   - 首页: index.md
   - 大模型:
       - llm/index.md
+      - DeepSeek-V4-Flash 模型结构解析: llm/deepseek-v4-flash-architecture.md
       - GLM-5.2 模型结构解析: llm/glm-5.2-architecture.md
   - AI 推理:
       - ai/index.md
