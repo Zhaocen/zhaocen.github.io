@@ -897,6 +897,66 @@ Ascend `BlockTable` 同时记录：
 
 对 padding token，slot 会被设置为无效值，防止图模式填充写坏真实缓存。启用 Decode Context Parallel 后，slot mapping 还会结合 rank 和 interleave 规则，只让负责该 token 的 rank 写入本地缓存。
 
+### 6.5 完整代码调用链：block id 怎样变成 Attention metadata
+
+把调度与执行两侧连起来后，一轮请求的主调用链如下。为了突出主干，省略了 PP、KV Connector、Mamba 和推测解码等旁路：
+
+```text
+EngineCore.step
+├─ Scheduler.schedule
+│  ├─ KVCacheManager.allocate_slots
+│  │  └─ KVCacheCoordinator.allocate_new_blocks
+│  │     └─ SingleTypeKVCacheManager.allocate_new_blocks
+│  │        └─ BlockPool.get_new_blocks
+│  ├─ NewRequestData.from_request                 # 新请求：携带完整 block_ids
+│  ├─ Scheduler._make_cached_request_data         # 运行中请求：携带增量 new_block_ids
+│  └─ SchedulerOutput(...)
+└─ ModelExecutor.execute_model(SchedulerOutput)
+   └─ GPUWorker.execute_model
+      └─ NPUModelRunner.execute_model
+         ├─ NPUModelRunner._update_states
+         │  └─ GPUModelRunner._update_states
+         │     ├─ InputBatch.add_request
+         │     │  └─ MultiGroupBlockTable.add_row
+         │     └─ MultiGroupBlockTable.append_row
+         ├─ NPUModelRunner._prepare_inputs
+         │  ├─ MultiGroupBlockTable.commit_block_table
+         │  ├─ NPUModelRunner._build_attn_state
+         │  ├─ 生成 query_start_loc / positions / seq_lens
+         │  └─ MultiGroupBlockTable.compute_slot_mapping
+         └─ NPUModelRunner._build_attention_metadata
+            ├─ 构造 AscendCommonAttentionMetadata
+            └─ AscendAttentionMetadataBuilder.build
+               └─ 为同一 attention group 的各层绑定 AscendMetadata
+```
+
+按这棵调用树跳读源码时，对应文件是：
+
+| 调用段 | 源文件 |
+| --- | --- |
+| Engine Core 发起调度与执行 | `vllm/v1/engine/core.py` |
+| 分配 slot、组间协调与物理块出池 | `vllm/v1/core/sched/scheduler.py`、`vllm/v1/core/kv_cache_manager.py`、`vllm/v1/core/kv_cache_coordinator.py`、`vllm/v1/core/single_type_kv_cache_manager.py`、`vllm/v1/core/block_pool.py` |
+| 构造新请求和缓存请求 payload | `vllm/v1/core/sched/output.py`、`vllm/v1/core/sched/scheduler.py` |
+| Worker 更新持久批次 | `vllm/v1/worker/gpu_model_runner.py`、`vllm/v1/worker/gpu_input_batch.py`、`vllm_ascend/worker/npu_input_batch.py` |
+| 页表提交、slot 计算和 metadata 构造 | `vllm_ascend/worker/block_table.py`、`vllm_ascend/worker/model_runner_v1.py`、`vllm_ascend/attention/attention_v1.py` |
+
+这里有三个容易在读代码时混淆的边界：
+
+1. `Scheduler.schedule` 返回的 block id 仍是控制面数据；真正的 NPU tensor 尚未参与。
+2. `GPUModelRunner._update_states` 是上游实现，但 `self.input_batch` 实际是 Ascend 的 `NPUInputBatch`，其中的 `block_table` 是 `MultiGroupBlockTable`。因此继承来的 `InputBatch.add_request` 最终会动态调用 Ascend 页表实现。
+3. `_prepare_inputs` 先发起 `commit_block_table`，再继续准备 CPU 输入，以便页表复制与后续 CPU 工作重叠；`compute_slot_mapping` 随后直接读取 NPU 侧 BlockTable。`_build_attention_metadata` 不再重新计算地址，只把已经准备好的 `block_table`、`slot_mapping`、`seq_lens` 和 `query_start_loc` 组合成各层可消费的 metadata。
+
+新请求与运行中请求在 Worker 侧最终汇合，但更新方式不同：
+
+| `SchedulerOutput` 内容 | Worker 中的处理 | BlockTable 语义 |
+| --- | --- | --- |
+| `scheduled_new_reqs[].block_ids` | 构造 `CachedRequestState`，再由 `InputBatch.add_request` 调用 `add_row` | 覆盖整行 |
+| `scheduled_cached_reqs.new_block_ids` | 更新已有 `CachedRequestState.block_ids`，再调用 `append_row` | 只追加本轮新页 |
+| `resumed_req_ids` 中的 `new_block_ids` | 先用新列表替换请求旧 block ids，随后重新加入 batch | 抢占恢复后的完整新行 |
+
+!!! note "CPU 页表先更新，NPU 页表按轮提交"
+    `add_row`、`append_row`、`clear_row` 和 batch 重排首先修改 `CpuGpuBuffer` 的 CPU/NumPy 视图；`commit_block_table` 才把当前有效请求行批量复制到 NPU。`slot_mapping` 必须在这次提交之后计算，否则会用旧页表把 token 写到错误的物理页。
+
 ---
 
 ## 七、NPU 执行阶段：先写缓存，再做注意力
@@ -905,16 +965,41 @@ Ascend `BlockTable` 同时记录：
 
 普通 Attention 层最终进入 `vllm_ascend/attention/attention_v1.py` 的 `AscendAttentionBackendImpl.forward`。
 
-只要当前 forward 提供了 K 和 V，就先执行缓存写入：
+从 ModelRunner 到设备算子的完整主调用链如下：
 
 ```text
-Attention forward
-  -> reshape_and_cache
-  -> DeviceOperator.reshape_and_cache
-  -> 当前设备代际对应的 NPU scatter/reshape-and-cache 算子
+NPUModelRunner.execute_model
+├─ set_ascend_forward_context(attn_metadata, ...)
+└─ NPUModelRunner._model_forward
+   └─ model.forward
+      └─ Attention.forward
+         └─ torch.ops.vllm.unified_attention_with_output
+            ├─ get_attention_context(layer_name)
+            │  ├─ 取本层 AscendMetadata
+            │  └─ 取本层 kv_cache tensor
+            └─ AscendAttentionBackendImpl.forward
+               ├─ AscendAttentionBackendImpl.reshape_and_cache
+               │  └─ DeviceOperator.reshape_and_cache
+               │     ├─ BaseDeviceAdaptor
+               │     │  └─ torch_npu.npu_scatter_pa_kv_cache
+               │     └─ Ascend310PDeviceAdaptor
+               │        └─ torch_npu._npu_reshape_and_cache
+               └─ AscendAttentionBackendImpl.forward_impl
+                  ├─ forward_paged_attention
+                  │  └─ torch_npu._npu_paged_attention
+                  └─ forward_fused_infer_attention
+                     ├─ _get_fia_params
+                     └─ DeviceOperator.npu_fused_infer_attention_score
+                        └─ torch_npu.npu_fused_infer_attention_score
 ```
 
-基础设备适配路径使用 `npu_scatter_pa_kv_cache`；其他设备代际可以在 `vllm_ascend/device/device_op.py` 中覆盖为不同实现。上层 Attention 不需要了解具体算子差异。
+这条链跨过三个文件边界：上游 `vllm/model_executor/layers/attention/attention.py` 提供统一 Attention 包装和 `get_attention_context`；`vllm_ascend/attention/attention_v1.py` 完成 KV 写入与 PA/FIA 派发；`vllm_ascend/device/device_op.py` 把统一调用映射到当前 Ascend 代际的算子。
+
+`set_ascend_forward_context` 把 ModelRunner 构造的 per-layer metadata 放进 forward context。`Attention.forward` 只携带 `layer_name` 进入统一 attention op，`get_attention_context` 再按层名取回对应的 metadata 和 KV cache，所以模型定义不需要显式传递 BlockTable。
+
+Ascend 平台声明 opaque attention op，普通 backend 又使用默认的 `forward_includes_kv_cache_update = True`。因此这条路径不会先调用上游独立的 `unified_kv_cache_update`；KV 写入就在 `AscendAttentionBackendImpl.forward` 内部完成，并且明确排在 `forward_impl` 之前。只有将来某个 backend 把 `forward_includes_kv_cache_update` 设为 `False`，上游 `Attention.forward` 才会拆出独立 update op，并用 dummy dependency 保证写入与注意力计算的顺序。
+
+基础设备适配路径使用 `npu_scatter_pa_kv_cache`；310P 覆盖为 `_npu_reshape_and_cache`。`DeviceOperator` 在模块加载时由 `get_device_adaptor` 按设备类型选定，上层 Attention 不需要了解具体算子差异。
 
 写入的语义可以表示成：
 
@@ -938,6 +1023,20 @@ Decode 时，当前位置也应该参与 causal attention。Ascend 路径先把�
 - 当前状态是纯 Decode；
 - 不是 Sliding Window Attention；
 - `using_paged_attention` 对当前硬件、图模式、batch shape 和 head size 判定为真。
+
+对应的代码分支可以直接压缩为：
+
+```text
+AscendAttentionBackendImpl.forward_impl
+└─ if attn_state == DecodeOnly
+      and sliding_window is None
+      and using_paged_attention(num_tokens, vllm_config, head_size):
+       forward_paged_attention
+   else:
+       forward_fused_infer_attention
+```
+
+`using_paged_attention` 继续执行以下判断：推测解码直接返回 `False`；A5 直接返回 `False`；A2/A3 上 512 维大 head 的 Decode 作为 FIA 限制的 fallback 返回 `True`；其余场景要求图模式为 `FULL_DECODE_ONLY`，并且 `num_tokens` 命中 Ascend 配置中的 `pa_shape_list`。所以“纯 Decode”只是必要条件，不代表一定进入专用 PA 算子。
 
 命中后调用 `torch_npu._npu_paged_attention`，核心输入是：
 
@@ -984,6 +1083,30 @@ Prefill、Chunked Prefill、Prefix Cache Hit、Sliding Window、推测解码或�
 | `SpecDecoding` | 一次验证多个 draft token | 预留 lookahead slot，并处理接受/拒绝后的状态 |
 
 Metadata builder 根据 query length、已计算 token 数和调度信息判断状态，再准备相应 mask、sequence lengths、BlockTable 和 slot mapping。
+
+### 7.6 PA 与 FIA 两条读取链怎样消费同一份页表
+
+两条分支都从 `AscendMetadata` 取得地址信息，但消费方式不同：
+
+| 调用链 | K/V 来源 | 地址与长度输入 |
+| --- | --- | --- |
+| `forward_paged_attention` → `_npu_paged_attention` | `self.key_cache`、`self.value_cache` | `block_tables`、`seq_lens` |
+| `forward_fused_infer_attention` → `_get_fia_params` → `npu_fused_infer_attention_score` | `PrefillNoCache` 使用当前 K/V；其余状态把分页 cache reshape 后传给 FIA | `block_table`、`block_size`、`actual_seq_lengths_q`、`actual_seq_lengths_kv` |
+
+`_get_fia_params` 是理解 FIA 是否“真的读了分页缓存”的关键：
+
+```text
+PrefillNoCache
+  -> block_table = None
+  -> key/value = 当前 batch 的 K/V
+
+PrefillCacheHit / DecodeOnly / ChunkedPrefill / SpecDecoding
+  -> key/value = 分页 key_cache/value_cache 的视图
+  -> block_table = attn_metadata.block_tables
+  -> actual_seq_lengths_kv = attn_metadata.seq_lens_list
+```
+
+因此，第六章生成的同一份 BlockTable 在第七章有两个终点：专用 PA 直接用它 gather 分页 K/V；FIA 把它连同页大小和序列长度一起交给融合算子。无论走哪条读取链，当前 token 的写入地址都来自同一个 `slot_mapping`，这保证了“写入页”和“读取页”使用一致的物理块编号。
 
 ---
 
