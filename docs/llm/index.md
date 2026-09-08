@@ -10,6 +10,12 @@
 
 <div class="grid cards" markdown>
 
+-   __[主流大模型注意力机制：DeepSeek、GLM 与 Qwen](mainstream-attention-mechanisms.md)__
+
+    ---
+
+    用统一框架比较 CSA/HCA、MLA+DSA+IndexShare，以及 Gated DeltaNet+周期性全注意力。
+
 -   __[DeepSeek-V4-Flash 模型结构解析](deepseek-v4-flash-architecture.md)__
 
     ---

@@ -166,10 +166,12 @@ nav:
   - 首页: index.md
   - 大模型:
       - llm/index.md
+      - 主流大模型注意力机制：DeepSeek、GLM 与 Qwen: llm/mainstream-attention-mechanisms.md
       - DeepSeek-V4-Flash 模型结构解析: llm/deepseek-v4-flash-architecture.md
       - GLM-5.2 模型结构解析: llm/glm-5.2-architecture.md
   - AI 推理:
       - ai/index.md
+      - 大模型并行策略与切分：结合 vLLM 和 vLLM Ascend 源码: ai/llm-parallelism-vllm-vllm-ascend.md
       - vLLM 启动服务全流程代码级剖析: ai/vllm-startup-internals.md
       - vLLM 的 KV Cache 机制剖析: ai/vllm-kv-cache.md
       - 从 KV Cache 到 PagedAttention：vLLM Ascend 代码级拆解: ai/vllm-ascend-kv-cache-paged-attention-internals.md

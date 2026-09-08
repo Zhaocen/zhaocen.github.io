@@ -6,6 +6,12 @@
 
 <div class="grid cards" markdown>
 
+-   __[大模型并行策略与切分：结合 vLLM 和 vLLM Ascend 源码](llm-parallelism-vllm-vllm-ascend.md)__
+
+    ---
+
+    从请求、层、矩阵、序列与专家五个切分轴，拆解 DP、PP、TP、CP、EP 在 vLLM 与昇腾 NPU 上的实现。
+
 -   __[vLLM 启动服务全流程代码级剖析](vllm-startup-internals.md)__
 
     ---
