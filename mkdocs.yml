@@ -166,7 +166,7 @@ nav:
   - 首页: index.md
   - 大模型:
       - llm/index.md
-      - 大模型分布式训练中的通信原语: llm/communication-primitives.md
+      - 大模型分布式推理中的通信原语: llm/communication-primitives.md
       - 主流大模型注意力机制：DeepSeek、GLM 与 Qwen: llm/mainstream-attention-mechanisms.md
       - DeepSeek-V4-Flash 模型结构解析: llm/deepseek-v4-flash-architecture.md
       - GLM-5.2 模型结构解析: llm/glm-5.2-architecture.md

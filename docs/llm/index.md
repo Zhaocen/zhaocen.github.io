@@ -10,11 +10,11 @@
 
 <div class="grid cards" markdown>
 
--   __[大模型分布式训练中的通信原语](communication-primitives.md)__
+-   __[大模型分布式推理中的通信原语](communication-primitives.md)__
 
     ---
 
-    从张量所有权出发，理解 Send/Recv、AllReduce、AllGather、ReduceScatter 与 AllToAll，以及它们如何支撑 DP、TP、PP、CP、EP 和 FSDP。
+    从一次在线 Forward 的张量所有权出发，理解 TP、PP、CP、EP、Prefill/Decode 与 KV 迁移背后的通信原语。
 
 -   __[主流大模型注意力机制：DeepSeek、GLM 与 Qwen](mainstream-attention-mechanisms.md)__
 
