@@ -46,7 +46,11 @@ tags:
 | MLP / MoE | 前 3 层 Dense；后 42 层 MoE | MoE 从 288 个路由专家中选 8 个，并运行 1 个共享专家 |
 | 词表 / 最大位置 | 154880 / 1048576 | 输出分数的候选 token 数 / 配置声明的上下文上限 |
 
-注意：**GLM-5.3-Flash 与 GLM-5.2 不是同一套层结构**。GLM-5.2 的 78 层 MLA/DSA 结构不能直接套到这里。模型的“约 320B 总参数、18B 激活参数”是官方的规模概述，不等于每步只需把 18B 参数从零加载一遍，也不代表所有硬件上的实际延迟。
+!!! note "为什么这里是 4096，而不是 6144？"
+
+    [GLM-5.3-Flash 的官方配置](https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a/config.json)在 `text_config.hidden_size` 中明确写 **4096**；[GLM-5.3（非 Flash）](https://huggingface.co/zai-org/GLM-5.3/blob/main/config.json)和 [GLM-5.2](https://huggingface.co/zai-org/GLM-5.2/blob/main/config.json)的 `hidden_size` 才是 **6144**。Flash 的 mHC 在层间保存 4 路 4096 维状态，整体张量是 `[B,T,4,4096]`，但每次进入注意力或 MoE 时先合成一条 `[B,T,4096]`。所以 `4×4096=16384` 是层间 4 路状态的合计宽度，也不是 `hidden_size`。
+
+**GLM-5.3-Flash 与 GLM-5.2 不是同一套层结构**。GLM-5.2 的 78 层 MLA/DSA 结构不能直接套到这里。模型的“约 320B 总参数、18B 激活参数”是官方的规模概述，不等于每步只需把 18B 参数从零加载一遍，也不代表所有硬件上的实际延迟。
 
 ## 3. 一个完整例子：输入问题、生成「5」、然后停止
 
