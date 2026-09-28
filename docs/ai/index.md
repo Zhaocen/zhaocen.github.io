@@ -30,4 +30,8 @@
 
     从 OpenAI API 到采样输出，按调用链顺序拆解 mHC 残差流、混合压缩稀疏注意力、MoE 与 MTP 推测解码。
 
+-   __[GLM-5.3-Flash 推理运算全过程](glm-5.3-flash-inference-walkthrough.md)__
+
+    用可手算的小例子串起 4 路 mHC、KDA 状态更新、IndexPool 稀疏检索、MoE 与逐 token 生成。
+
 </div>
