@@ -34,6 +34,12 @@
 
     从配置到源码拆解 78 层 MoE、MLA、DSA、IndexShare 和 MTP 的完整结构。
 
+-   __[GLM-5.3-Flash 的 KDA 层图解](glm-5.3-flash-kda.md)__
+
+    ---
+
+    用记忆白板、数据通路图和 2×2 矩阵手算，理解逐通道遗忘、Delta Rule 纠错写入和固定状态缓存。
+
 -   :material-graph-outline:{ .lg .middle } __模型架构__
 
     ---

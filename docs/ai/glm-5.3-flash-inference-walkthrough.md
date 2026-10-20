@@ -160,6 +160,8 @@ Embedding 是一张参数表，形状为 `[154880, 4096]`。若一个 token 的 
 
 ## 5. 多数层：KDA 怎样用固定状态“记历史”
 
+想单独理解这块记忆如何遗忘、纠错与查询，可先读配套的[KDA 层图解](../llm/glm-5.3-flash-kda.md)，其中有数据通路图和完整的二维矩阵手算。
+
 第 0、1、2、4、5、6……层走 KDA。它的直觉是：不为当前 token 和所有历史 token 都形成一个完整的注意力分数列表，而是把历史压进**每个头的状态矩阵**。这让 Decode 时的历史状态大小不随已生成 token 数线性增长，但压缩可能丢失某些细节，所以模型还穿插稀疏 MLA。
 
 ### 5.1 子层先准备 Q、K、V 和门
@@ -171,10 +173,10 @@ mHC 合并后的输入先经 RMSNorm，得到 `[B,T,4096]`。KDA 的 Q、K、V �
 $$
 \begin{aligned}
 \widetilde S_t &= \operatorname{diag}(e^{g_t})S_{t-1},\\
-\widehat v_t &= k_t^\top\widetilde S_t,\\
+\widehat v_t &= \widetilde S_t^\top k_t,\\
 \Delta_t &= \beta_t(v_t-\widehat v_t),\\
 S_t &= \widetilde S_t+k_t\Delta_t^\top,\\
-o_t &= q_t^\top S_t.
+o_t &= S_t^\top q_t.
 \end{aligned}
 $$
 
